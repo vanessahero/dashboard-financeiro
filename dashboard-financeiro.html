@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -207,6 +208,8 @@
     <button class="tab" onclick="trocarAba('graficos')">📊 Gráficos</button>
     <button class="tab" onclick="trocarAba('equipe')">👥 Equipe</button>
     <button class="tab" onclick="trocarAba('filas')">📂 Filas</button>
+    <button class="tab" onclick="trocarAba('sla')">⏱️ SLA</button>
+    <button class="tab" onclick="trocarAba('produtividade')">📈 Produtividade</button>
   </div>
 
   <div class="summary-grid">
@@ -235,6 +238,14 @@
 
   <div id="tab-filas" class="tab-content">
     <div id="filas-area"><div class="loading-state"><div class="dot-pulse"><span></span><span></span><span></span></div><div>Carregando filas...</div></div></div>
+  </div>
+
+  <div id="tab-sla" class="tab-content">
+    <div id="sla-area"><div class="loading-state"><div class="dot-pulse"><span></span><span></span><span></span></div><div>Carregando SLA...</div></div></div>
+  </div>
+
+  <div id="tab-produtividade" class="tab-content">
+    <div id="produtividade-area"><div class="loading-state"><div class="dot-pulse"><span></span><span></span><span></span></div><div>Carregando produtividade...</div></div></div>
   </div>
 
   <div class="footer">Dashboard gerado via API do <span>Runrun.it</span> · Hero Seguros</div>
@@ -281,22 +292,39 @@ function diasTxt(d){return d===0?'hoje':d===1?'1 dia':d+' dias';}
 function badgeDias(d){return'<span class="dt-dias '+diasCls(d)+'">'+diasTxt(d)+'</span>';}
 
 function trocarAba(aba){
-  ['overview','graficos','equipe','filas'].forEach(function(a,i){
+  ['overview','graficos','equipe','filas','sla','produtividade'].forEach(function(a,i){
     document.querySelectorAll('.tab')[i].classList.toggle('active',a===aba);
     document.getElementById('tab-'+a).classList.toggle('active',a===aba);
   });
   if(aba==='graficos'&&!graficosCarregados) carregarGraficos();
   if(aba==='equipe'&&!equipeCarregada) carregarEquipe();
   if(aba==='filas'&&!filasCarregadas) carregarFilas();
+  if(aba==='sla'&&!slaCarregado) carregarSLA();
+  if(aba==='produtividade'&&!produtividadeCarregada) carregarProdutividade();
 }
 
 function recarregarTudo(){
-  graficosCarregados=false; equipeCarregada=false; filasCarregadas=false;
+  graficosCarregados=false; equipeCarregada=false; filasCarregadas=false; slaCarregado=false; produtividadeCarregada=false;
   carregarDados();
   var idx=Array.from(document.querySelectorAll('.tab')).findIndex(function(t){return t.classList.contains('active');});
   if(idx===1) carregarGraficos();
   if(idx===2) carregarEquipe();
   if(idx===3) carregarFilas();
+  if(idx===4) carregarSLA();
+  if(idx===5) carregarProdutividade();
+}
+
+function buscarPaginado(url, acumulado){
+  return fetchJSON(url+'&page='+(acumulado.pagina||1)).then(function(d){
+    var items=d.data||[];
+    var todos=(acumulado.dados||[]).concat(items);
+    var total=d.meta&&d.meta.total||0;
+    var pagina=(acumulado.pagina||1)+1;
+    if(todos.length<total&&items.length>0&&pagina<=10){
+      return buscarPaginado(url,{dados:todos,pagina:pagina});
+    }
+    return {dados:todos,total:total};
+  });
 }
 
 function carregarDados(){
@@ -306,17 +334,18 @@ function carregarDados(){
   Promise.all([
     fetchJSON(BASE+'/boards/'+BOARD_ID+'/stages'),
     fetchJSON(BASE+'/boards/'+BOARD_ID+'/tasks?limit=1'),
-    fetchJSON(BASE+'/boards/'+BOARD_ID+'/tasks?limit=200&is_closed=false'),
-    fetchJSON(BASE+'/boards/'+BOARD_ID+'/tasks?limit=200&board_stage_id='+STAGE_FINALIZADO_ID)
+    buscarPaginado(BASE+'/boards/'+BOARD_ID+'/tasks?limit=200&is_closed=false',{}),
+    fetchJSON(BASE+'/tasks?limit=200&board_id='+BOARD_ID+'&is_closed=true&close_date_after='+hojeStr)
   ]).then(function(res){
     var colunas=res[0];
     var totalGeral=res[1].meta&&res[1].meta.total||0;
-    dadosGlobais.abertas=res[2].data||[];
-    dadosGlobais.finalizadas=res[3].data||[];
+    dadosGlobais.abertas=res[2].dados||[];
+    dadosGlobais.finalizadas=Array.isArray(res[3])?res[3]:(res[3].data||[]);
+    var encHoje=dadosGlobais.finalizadas.filter(function(t){return t.close_date&&t.close_date.split('T')[0]===hojeStr;}).length;
     document.getElementById('stat-total').textContent=totalGeral.toLocaleString('pt-BR');
     document.getElementById('stat-abertas').textContent=dadosGlobais.abertas.length.toLocaleString('pt-BR');
     document.getElementById('stat-hoje').textContent=dadosGlobais.abertas.filter(function(t){return t.created_at&&t.created_at.split('T')[0]===hojeStr;}).length;
-    document.getElementById('stat-enc').textContent=dadosGlobais.finalizadas.filter(function(t){return t.close_date&&t.close_date.split('T')[0]===hojeStr;}).length;
+    document.getElementById('stat-enc').textContent=encHoje;
     document.getElementById('stat-urgentes-sd').textContent=dadosGlobais.abertas.filter(function(t){return t.is_urgent&&(!t.assignments||!t.assignments.length);}).length;
     document.getElementById('badge-total').textContent=totalGeral.toLocaleString('pt-BR')+' tarefas';
     return Promise.all(colunas.map(function(col){
@@ -353,8 +382,8 @@ function carregarDados(){
 
 function carregarEquipe(){
   document.getElementById('equipe-area').innerHTML='<div class="loading-state"><div class="dot-pulse"><span></span><span></span><span></span></div><div>Carregando equipe...</div></div>';
-  fetchJSON(BASE+'/boards/'+BOARD_ID+'/tasks?limit=200&is_closed=false').then(function(res){
-    var tarefas=res.data||[];
+  buscarPaginado(BASE+'/boards/'+BOARD_ID+'/tasks?limit=200&is_closed=false',{}).then(function(res){
+    var tarefas=res.dados||[];
     var semDono=tarefas.filter(function(t){return !t.assignments||!t.assignments.length;});
     var urgentesSD=semDono.filter(function(t){return t.is_urgent;});
     var membros={};
@@ -458,12 +487,12 @@ function carregarGraficos(){
   document.getElementById('graficos-area').innerHTML='<div class="loading-state"><div class="dot-pulse"><span></span><span></span><span></span></div><div>Carregando gráficos...</div></div>';
   Promise.all([
     fetchJSON(BASE+'/boards/'+BOARD_ID+'/stages'),
-    fetchJSON(BASE+'/boards/'+BOARD_ID+'/tasks?limit=200&is_closed=false'),
-    fetchJSON(BASE+'/boards/'+BOARD_ID+'/tasks?limit=200&board_stage_id='+STAGE_FINALIZADO_ID)
+    buscarPaginado(BASE+'/boards/'+BOARD_ID+'/tasks?limit=200&is_closed=false',{}),
+    fetchJSON(BASE+'/tasks?limit=200&board_id='+BOARD_ID+'&is_closed=true&close_date_after='+hojeStr)
   ]).then(function(res){
     var colunas=res[0].filter(function(c){return c.stage_group!=='closed';});
-    var abertas=res[1].data||[];
-    var fin=res[2].data||[];
+    var abertas=res[1].dados||[];
+    var fin=Array.isArray(res[2])?res[2]:(res[2].data||[]);
     var porCol={};
     abertas.forEach(function(t){if(!porCol[t.board_stage_id])porCol[t.board_stage_id]=[];porCol[t.board_stage_id].push(t);});
     var lF=[],dPend=[],dTempo=[];
@@ -634,6 +663,172 @@ function toggleFila(id){
   var open=el.style.display!=='none';
   el.style.display=open?'none':'block';
   if(icon) icon.textContent=open?'▶':'▼';
+}
+
+
+var slaCarregado=false;
+var produtividadeCarregada=false;
+
+var SLA_HORAS={
+  'Contas a Pagar':2,'Contas a Receber':5,'Sinistros':24,'Faturamento':2,
+  'Cancelamentos':8,'Fechamentos':24,'Em banco':1,'Em aprovação':1,
+  'Aguardando retorno':2,'Câmbio_Claims':48,'Câmbio - Fatura Individual':48,
+  'Prestadores_C6':24,'Prestamistas':1,'Cartão de Crédito':24,
+  'Cartão de Crédito - Hero Assist':24,'Tarefas':24
+};
+
+function horasEmAberto(created_at){
+  if(!created_at) return 0;
+  return Math.round((new Date()-new Date(created_at))/3600000*10)/10;
+}
+function slaStatus(horas,slaH){
+  if(!slaH) return 'sem-sla';
+  var pct=horas/slaH;
+  if(pct>=1) return 'violado';
+  if(pct>=0.75) return 'risco';
+  return 'ok';
+}
+
+function carregarSLA(){
+  document.getElementById('sla-area').innerHTML='<div class="loading-state"><div class="dot-pulse"><span></span><span></span><span></span></div><div>Analisando SLA...</div></div>';
+  buscarPaginado(BASE+'/boards/'+BOARD_ID+'/tasks?limit=200&is_closed=false',{}).then(function(res){
+    var tarefas=res.dados||[];
+    var violadas=[],risco=[],ok=[],semSLA=[];
+    var porFila={};
+    tarefas.forEach(function(t){
+      var fila=t.board_stage_name||'';
+      var slaH=SLA_HORAS[fila];
+      var horas=horasEmAberto(t.created_at);
+      var status=slaStatus(horas,slaH);
+      var a=t.assignments&&t.assignments[0];
+      var nome=(a&&a.assignee_name||'').trim()||'Sem dono';
+      var av=a&&a.assignee_avatar_url||'';
+      var obj={t:t,fila:fila,slaH:slaH,horas:horas,status:status,nome:nome,av:av};
+      if(status==='violado') violadas.push(obj);
+      else if(status==='risco') risco.push(obj);
+      else if(status==='ok') ok.push(obj);
+      else semSLA.push(obj);
+      if(!porFila[fila]) porFila[fila]={fila:fila,slaH:slaH,total:0,violadas:0,risco:0,ok:0};
+      porFila[fila].total++;
+      if(status==='violado') porFila[fila].violadas++;
+      else if(status==='risco') porFila[fila].risco++;
+      else porFila[fila].ok++;
+    });
+    [violadas,risco].forEach(function(arr){arr.sort(function(a,b){return b.horas-a.horas;});});
+    var resumoFilas=Object.values(porFila).sort(function(a,b){return b.violadas-a.violadas;});
+
+    function renderTarefaSLA(obj){
+      var pct=obj.slaH?Math.min(Math.round((obj.horas/obj.slaH)*100),100):0;
+      var corBarra=obj.status==='violado'?'var(--red)':obj.status==='risco'?'var(--orange)':'var(--green)';
+      var bgRow=obj.status==='violado'?'#fff8f8':obj.status==='risco'?'#fffbf0':'white';
+      return '<div style="background:'+bgRow+';border:1px solid var(--gray-200);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:6px">'+
+        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'+
+        '<div style="flex:1;min-width:0"><a href="https://runrun.it/tasks/'+obj.t.id+'" target="_blank" style="font-size:12px;font-weight:600;color:var(--text);text-decoration:none;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+obj.t.title+'</a>'+
+        '<div style="font-size:11px;color:var(--text-secondary);margin-top:2px">'+obj.fila+(obj.slaH?' · SLA: '+obj.slaH+'h':' · Sem SLA')+'</div></div>'+
+        '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">'+
+        (obj.av?'<img src="'+obj.av+'" style="width:20px;height:20px;border-radius:50%;object-fit:cover">':'')+
+        '<span style="font-size:11px;color:var(--text-secondary)">'+obj.nome+'</span></div>'+
+        '<span style="font-size:11px;font-weight:700;padding:2px 10px;border-radius:10px;background:'+(obj.status==='violado'?'var(--red-pale)':obj.status==='risco'?'var(--orange-pale)':'var(--green-pale)')+';color:'+(obj.status==='violado'?'var(--red)':obj.status==='risco'?'var(--orange)':'var(--green)')+'">'+obj.horas+'h'+(obj.slaH?' / '+obj.slaH+'h':'')+'</span>'+
+        '</div>'+(obj.slaH?'<div style="height:4px;background:var(--gray-100);border-radius:2px;margin-top:8px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:'+corBarra+';border-radius:2px"></div></div>':'')+
+        '</div>';
+    }
+
+    var html='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:1.5rem">';
+    html+='<div style="background:var(--red-pale);border-radius:var(--radius);padding:1rem 1.25rem;border:1px solid #f5b8b8"><div style="font-size:11px;font-weight:600;color:var(--red);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px">SLA Violado</div><div style="font-size:28px;font-weight:700;color:var(--red)">'+violadas.length+'</div></div>';
+    html+='<div style="background:var(--orange-pale);border-radius:var(--radius);padding:1rem 1.25rem;border:1px solid #f5d9a8"><div style="font-size:11px;font-weight:600;color:var(--orange);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px">Em Risco (75%+)</div><div style="font-size:28px;font-weight:700;color:var(--orange)">'+risco.length+'</div></div>';
+    html+='<div style="background:var(--green-pale);border-radius:var(--radius);padding:1rem 1.25rem;border:1px solid #9FE1CB"><div style="font-size:11px;font-weight:600;color:var(--green);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px">Dentro do SLA</div><div style="font-size:28px;font-weight:700;color:var(--green)">'+ok.length+'</div></div>';
+    html+='<div style="background:var(--gray-100);border-radius:var(--radius);padding:1rem 1.25rem;border:1px solid var(--gray-200)"><div style="font-size:11px;font-weight:600;color:var(--gray-500);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px">Sem SLA config.</div><div style="font-size:28px;font-weight:700;color:var(--gray-500)">'+semSLA.length+'</div></div>';
+    html+='</div>';
+
+    html+='<div style="background:white;border:1px solid var(--gray-200);border-radius:var(--radius);padding:1.25rem;margin-bottom:1.5rem;box-shadow:var(--shadow-sm)">';
+    html+='<div style="font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;margin-bottom:1rem">Cumprimento de SLA por fila</div>';
+    html+='<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="border-bottom:1px solid var(--gray-200)"><th style="text-align:left;padding:6px 8px;font-weight:600;color:var(--text-secondary);font-size:11px">Fila</th><th style="text-align:center;padding:6px 8px;font-weight:600;color:var(--text-secondary);font-size:11px">SLA</th><th style="text-align:center;padding:6px 8px;font-weight:600;color:var(--red);font-size:11px">Violadas</th><th style="text-align:center;padding:6px 8px;font-weight:600;color:var(--orange);font-size:11px">Em risco</th><th style="text-align:center;padding:6px 8px;font-weight:600;color:var(--green);font-size:11px">OK</th><th style="text-align:left;padding:6px 8px;font-weight:600;color:var(--text-secondary);font-size:11px">Barra</th></tr></thead><tbody>';
+    resumoFilas.forEach(function(f){
+      var pctViol=f.total>0?Math.round((f.violadas/f.total)*100):0;
+      var pctRisco=f.total>0?Math.round((f.risco/f.total)*100):0;
+      var pctOk=f.total>0?Math.round((f.ok/f.total)*100):0;
+      html+='<tr style="border-bottom:1px solid var(--gray-100)"><td style="padding:8px"><span style="font-weight:600">'+f.fila+'</span></td><td style="text-align:center;padding:8px;color:var(--text-secondary)">'+(f.slaH?f.slaH+'h':'—')+'</td><td style="text-align:center;padding:8px"><span style="font-weight:700;color:'+(f.violadas>0?'var(--red)':'var(--gray-400)')+'">'+f.violadas+'</span></td><td style="text-align:center;padding:8px"><span style="font-weight:700;color:'+(f.risco>0?'var(--orange)':'var(--gray-400)')+'">'+f.risco+'</span></td><td style="text-align:center;padding:8px"><span style="font-weight:700;color:var(--green)">'+f.ok+'</span></td><td style="padding:8px;min-width:120px"><div style="height:6px;background:var(--gray-100);border-radius:3px;overflow:hidden;display:flex">'+(pctViol>0?'<div style="width:'+pctViol+'%;background:var(--red)"></div>':'')+(pctRisco>0?'<div style="width:'+pctRisco+'%;background:var(--orange)"></div>':'')+(pctOk>0?'<div style="width:'+pctOk+'%;background:var(--green)"></div>':'')+'</div></td></tr>';
+    });
+    html+='</tbody></table></div>';
+
+    if(violadas.length>0){
+      html+='<div style="margin-bottom:1rem"><div style="font-size:11px;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">🚨 SLA Violado ('+violadas.length+')</div>';
+      violadas.forEach(function(obj){html+=renderTarefaSLA(obj);});
+      html+='</div>';
+    }
+    if(risco.length>0){
+      html+='<div><div style="font-size:11px;font-weight:700;color:var(--orange);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">⚠️ Em risco ('+risco.length+')</div>';
+      risco.forEach(function(obj){html+=renderTarefaSLA(obj);});
+      html+='</div>';
+    }
+    if(violadas.length===0&&risco.length===0){
+      html+='<div style="text-align:center;padding:2rem;color:var(--green);font-size:14px;font-weight:600">✅ Todas as tarefas estão dentro do SLA!</div>';
+    }
+
+    document.getElementById('sla-area').innerHTML=html;
+    slaCarregado=true;
+  }).catch(function(e){
+    document.getElementById('sla-area').innerHTML='<div class="loading-state" style="color:var(--red)">Erro: '+e.message+'</div>';
+  });
+}
+
+function carregarProdutividade(){
+  document.getElementById('produtividade-area').innerHTML='<div class="loading-state"><div class="dot-pulse"><span></span><span></span><span></span></div><div>Carregando produtividade...</div></div>';
+  var d7=new Date(hoje); d7.setDate(hoje.getDate()-6);
+  var d7str=d7.toISOString().split('T')[0];
+  fetchJSON(BASE+'/tasks?limit=500&board_id='+BOARD_ID+'&is_closed=true&close_date_after='+d7str).then(function(finalizadas){
+    var fin=Array.isArray(finalizadas)?finalizadas:(finalizadas.data||[]);
+    var dias=[];
+    for(var i=6;i>=0;i--){var d=new Date(hoje);d.setDate(hoje.getDate()-i);var ds=d.toISOString().split('T')[0];var label=d.toLocaleDateString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit'});var count=fin.filter(function(t){return t.close_date&&t.close_date.split('T')[0]===ds;}).length;dias.push({ds:ds,label:label,count:count});}
+    var porPessoa={};
+    fin.forEach(function(t){var a=t.assignments&&t.assignments[0];var nome=(a&&a.assignee_name||t.user_name||'').trim()||'Sem responsável';var av=a&&a.assignee_avatar_url||'';if(!porPessoa[nome])porPessoa[nome]={nome:nome,av:av,total:0,dias:{}};porPessoa[nome].total++;var ds=t.close_date&&t.close_date.split('T')[0];if(ds)porPessoa[nome].dias[ds]=(porPessoa[nome].dias[ds]||0)+1;});
+    var rankPessoa=Object.values(porPessoa).sort(function(a,b){return b.total-a.total;});
+    var maxPessoa=rankPessoa.length>0?rankPessoa[0].total:1;
+    var porFila={};
+    fin.forEach(function(t){var fila=t.board_stage_name||'Sem fila';if(!porFila[fila])porFila[fila]={fila:fila,total:0};porFila[fila].total++;});
+    var rankFila=Object.values(porFila).sort(function(a,b){return b.total-a.total;});
+    var maxFila=rankFila.length>0?rankFila[0].total:1;
+    var totalPeriodo=fin.length;
+    var mediaDiaria=Math.round(totalPeriodo/7*10)/10;
+    var maxDia=Math.max.apply(null,dias.map(function(d){return d.count;}))||1;
+
+    var html='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:1.5rem">';
+    html+='<div class="summary-card a2"><div class="summary-label">Total 7 dias</div><div class="summary-value green">'+totalPeriodo+'</div></div>';
+    html+='<div class="summary-card a3"><div class="summary-label">Média/dia</div><div class="summary-value orange">'+mediaDiaria+'</div></div>';
+    html+='<div class="summary-card a4"><div class="summary-label">Hoje</div><div class="summary-value blue">'+(dias[6]?dias[6].count:0)+'</div></div>';
+    html+='<div class="summary-card a1"><div class="summary-label">Melhor dia</div><div class="summary-value purple">'+Math.max.apply(null,dias.map(function(d){return d.count;}))+'</div></div>';
+    html+='</div>';
+
+    html+='<div style="background:white;border:1px solid var(--gray-200);border-radius:var(--radius);padding:1.25rem;margin-bottom:1.5rem;box-shadow:var(--shadow-sm)">';
+    html+='<div style="font-size:13px;font-weight:700;margin-bottom:1rem">📅 Finalizadas por dia — últimos 7 dias</div>';
+    html+='<div style="display:flex;align-items:flex-end;gap:8px;height:140px;padding-bottom:28px;position:relative">';
+    dias.forEach(function(d,i){var pct=maxDia>0?Math.round((d.count/maxDia)*90):0;var isHoje=i===6;html+='<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%;justify-content:flex-end"><span style="font-size:11px;font-weight:700;color:'+(isHoje?'var(--purple)':'var(--text-secondary)')+'">'+d.count+'</span><div style="width:100%;background:'+(isHoje?'var(--purple)':'var(--purple-light)')+';border-radius:4px 4px 0 0;height:'+pct+'%;min-height:'+(d.count>0?'4px':'0')+'"></div><span style="font-size:10px;color:var(--text-secondary);text-align:center;position:absolute;bottom:0;width:'+(100/7)+'%">'+d.label+'</span></div>';});
+    html+='</div></div>';
+
+    html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:1.5rem">';
+    html+='<div style="background:white;border:1px solid var(--gray-200);border-radius:var(--radius);padding:1.25rem;box-shadow:var(--shadow-sm)"><div style="font-size:13px;font-weight:700;margin-bottom:1rem">👤 Por responsável</div>';
+    if(rankPessoa.length===0){html+='<div style="font-size:12px;color:var(--gray-400)">Nenhuma tarefa no período.</div>';}
+    else{rankPessoa.forEach(function(p,i){var pct=Math.round((p.total/maxPessoa)*100);var cores=['#7A05C6','#A30DFF','#C98BFF','#1D9E75','#3B82F6','#E07B00','#E24B4A','#D80073'];var cor=cores[i%cores.length];html+='<div style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="font-size:13px;min-width:20px">'+(i<3?['🥇','🥈','🥉'][i]:(i+1)+'º')+'</span>'+(p.av?'<img src="'+p.av+'" style="width:22px;height:22px;border-radius:50%;object-fit:cover">':'<div style="width:22px;height:22px;border-radius:50%;background:var(--purple-pale);color:var(--purple-dark);font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center">'+initials(p.nome)+'</div>')+'<span style="flex:1;font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+p.nome+'</span><span style="font-size:12px;font-weight:700;color:'+cor+'">'+p.total+'</span></div><div style="height:5px;background:var(--gray-100);border-radius:3px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:'+cor+';border-radius:3px"></div></div></div>';});}
+    html+='</div>';
+
+    html+='<div style="background:white;border:1px solid var(--gray-200);border-radius:var(--radius);padding:1.25rem;box-shadow:var(--shadow-sm)"><div style="font-size:13px;font-weight:700;margin-bottom:1rem">📂 Por fila</div>';
+    if(rankFila.length===0){html+='<div style="font-size:12px;color:var(--gray-400)">Nenhuma tarefa no período.</div>';}
+    else{rankFila.forEach(function(f,i){var pct=Math.round((f.total/maxFila)*100);var cores=['#7A05C6','#A30DFF','#C98BFF','#1D9E75','#3B82F6','#E07B00','#E24B4A','#D80073'];var cor=cores[i%cores.length];html+='<div style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="font-size:12px;font-weight:700;min-width:28px;color:var(--text-secondary)">'+(i+1)+'º</span><span style="flex:1;font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+f.fila+'</span><span style="font-size:12px;font-weight:700;color:'+cor+'">'+f.total+'</span></div><div style="height:5px;background:var(--gray-100);border-radius:3px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:'+cor+';border-radius:3px"></div></div></div>';});}
+    html+='</div></div>';
+
+    if(rankPessoa.length>0){
+      html+='<div style="background:white;border:1px solid var(--gray-200);border-radius:var(--radius);padding:1.25rem;box-shadow:var(--shadow-sm)"><div style="font-size:13px;font-weight:700;margin-bottom:1rem">📊 Detalhe por pessoa × dia</div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="border-bottom:1px solid var(--gray-200)"><th style="text-align:left;padding:6px 10px;font-weight:600;color:var(--text-secondary);font-size:11px">Responsável</th>';
+      dias.forEach(function(d){html+='<th style="text-align:center;padding:6px 8px;font-weight:600;color:var(--text-secondary);font-size:11px;white-space:nowrap">'+d.label+'</th>';});
+      html+='<th style="text-align:center;padding:6px 8px;font-weight:700;color:var(--purple);font-size:11px">Total</th></tr></thead><tbody>';
+      rankPessoa.forEach(function(p,pi){html+='<tr style="border-bottom:1px solid var(--gray-100);background:'+(pi%2===0?'white':'var(--gray-50)')+'"><td style="padding:8px 10px;font-weight:500">'+p.nome+'</td>';dias.forEach(function(d){var v=p.dias[d.ds]||0;html+='<td style="text-align:center;padding:8px;font-weight:'+(v>0?'700':'400')+';color:'+(v>0?'var(--purple)':'var(--gray-400)')+'">'+( v>0?v:'—')+'</td>';});html+='<td style="text-align:center;padding:8px;font-weight:700;color:var(--purple)">'+p.total+'</td></tr>';});
+      html+='</tbody></table></div></div>';
+    }
+
+    document.getElementById('produtividade-area').innerHTML=html;
+    produtividadeCarregada=true;
+  }).catch(function(e){
+    document.getElementById('produtividade-area').innerHTML='<div class="loading-state" style="color:var(--red)">Erro: '+e.message+'</div>';
+  });
 }
 
 carregarDados();
